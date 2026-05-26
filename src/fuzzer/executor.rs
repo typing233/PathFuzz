@@ -1,24 +1,34 @@
-use libafl::executors::ExitKind;
+use libafl::executors::{Executor, ExitKind, HasObservers};
+use libafl::Error;
+use libafl_bolts::tuples::RefIndexable;
 
 use crate::http_client::HttpSender;
 
 use super::input::FuzzHttpRequest;
-use super::state::HttpObserver;
+use super::observer::HttpObserver;
 
 pub struct HttpExecutor {
     sender: HttpSender,
-    observer: HttpObserver,
+    observers: (HttpObserver, ()),
 }
 
 impl HttpExecutor {
     pub fn new(timeout_secs: u64) -> Self {
         Self {
             sender: HttpSender::new(timeout_secs),
-            observer: HttpObserver::new(),
+            observers: (HttpObserver::new(), ()),
         }
     }
+}
 
-    pub fn execute_request(&mut self, input: &FuzzHttpRequest) -> ExitKind {
+impl<EM, S, Z> Executor<EM, FuzzHttpRequest, S, Z> for HttpExecutor {
+    fn run_target(
+        &mut self,
+        _fuzzer: &mut Z,
+        _state: &mut S,
+        _mgr: &mut EM,
+        input: &FuzzHttpRequest,
+    ) -> Result<ExitKind, Error> {
         let http_request = input.to_http_request();
 
         match self.sender.send(&http_request) {
@@ -35,25 +45,31 @@ impl HttpExecutor {
                     response.duration
                 );
 
-                self.observer.last_status_code = Some(status_code);
-                self.observer.last_response_body = Some(response.body);
+                self.observers.0.record(status_code, response.body);
 
                 if is_server_error {
-                    ExitKind::Crash
+                    Ok(ExitKind::Crash)
                 } else {
-                    ExitKind::Ok
+                    Ok(ExitKind::Ok)
                 }
             }
             Err(e) => {
                 println!("  [ERR] {} {} -> {}", input.method, input.url, e);
-                self.observer.last_status_code = None;
-                self.observer.last_response_body = None;
-                ExitKind::Timeout
+                self.observers.0.clear();
+                Ok(ExitKind::Timeout)
             }
         }
     }
+}
 
-    pub fn observer(&self) -> &HttpObserver {
-        &self.observer
+impl HasObservers for HttpExecutor {
+    type Observers = (HttpObserver, ());
+
+    fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
+        RefIndexable::from(&self.observers)
+    }
+
+    fn observers_mut(&mut self) -> RefIndexable<&mut Self::Observers, Self::Observers> {
+        RefIndexable::from(&mut self.observers)
     }
 }

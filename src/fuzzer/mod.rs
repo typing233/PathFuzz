@@ -1,9 +1,11 @@
 mod input;
 mod executor;
 mod feedback;
-mod state;
+mod observer;
+mod mutator;
 
 pub use input::*;
 pub use executor::*;
 pub use feedback::*;
-pub use state::*;
+pub use observer::*;
+pub use mutator::*;
