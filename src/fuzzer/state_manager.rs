@@ -92,11 +92,23 @@ impl StateManager {
                     request.query_params.insert(param_name.clone(), value);
                 }
                 InjectionTarget::PathParam(param_name) => {
+                    // Try placeholder format {paramName} first
                     let placeholder = format!("{{{}}}", param_name);
                     if request.url.contains(&placeholder) {
                         request.url = request.url.replace(&placeholder, &value);
+                    } else if request.url.contains("__PATHFUZZ_ID__") {
+                        // Replace the generic ID placeholder used by sequence generator
+                        request.url = request.url.replacen("__PATHFUZZ_ID__", &value, 1);
                     } else {
-                        request.url = request.url.replace(param_name, &value);
+                        // Last resort: try to find and replace a path segment that looks
+                        // like it was a substituted ID value (numeric or example value)
+                        let segments: Vec<&str> = request.url.rsplitn(2, '/').collect();
+                        if segments.len() == 2 {
+                            let last_segment = segments[0];
+                            if looks_like_id_value(last_segment) {
+                                request.url = format!("{}/{}", segments[1], value);
+                            }
+                        }
                     }
                 }
                 InjectionTarget::Header(header_name) => {
@@ -239,6 +251,28 @@ fn set_json_value(json: &mut Value, segments: &[PathSegment], value: &str) {
     };
 
     set_json_value(next, &segments[1..], value);
+}
+
+fn looks_like_id_value(segment: &str) -> bool {
+    if segment.is_empty() {
+        return false;
+    }
+    // Pure numeric segments are likely IDs
+    if segment.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // UUID-like patterns
+    if segment.len() == 36 && segment.chars().filter(|&c| c == '-').count() == 4 {
+        return true;
+    }
+    // Short alphanumeric that looks like an ID (e.g., "abc123")
+    if segment.len() <= 32
+        && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && segment.chars().any(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]

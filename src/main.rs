@@ -17,8 +17,7 @@ use pathfuzz::fuzzer::{
     CoverageScheduler, FuzzHttpRequest, FuzzRequestSequence, HttpExecutor, HttpRequestMutator,
     ParamMutator, SequenceExecutor, SequenceMutator,
 };
-use pathfuzz::fuzzer::state_manager::{InjectionTarget, StateExtraction};
-use pathfuzz::generator::CorpusGenerator;
+use pathfuzz::generator::{CorpusGenerator, SequenceCorpusGenerator};
 use pathfuzz::parser::parse_openapi_file;
 
 #[derive(Debug, Clone)]
@@ -233,7 +232,7 @@ fn main() {
     // Phase 2: Sequence-based stateful fuzzing
     // ========================================================
     let seq_iterations = iterations / 2;
-    if seq_iterations > 0 && initial_requests.len() >= 2 {
+    if seq_iterations > 0 {
         println!();
         println!(
             "=== Phase 2: Sequence Fuzzing ({} iterations) ===",
@@ -241,111 +240,113 @@ fn main() {
         );
         println!();
 
-        // Build sequence corpus from pairs/triples of endpoints.
-        // Auto-detect state extractions: if a POST response likely returns an ID,
-        // wire it into subsequent requests that reference that resource.
-        let mut seq_corpus = InMemoryCorpus::<FuzzRequestSequence>::new();
+        // Build sequence corpus using endpoint metadata for proper state extraction.
+        // The SequenceCorpusGenerator understands path params (petId, userId, etc.)
+        // and builds extraction rules that wire POST response IDs into subsequent
+        // requests at the correct URL positions.
+        let seq_generator = SequenceCorpusGenerator::new(base_url);
+        let sequence_seeds = seq_generator.generate_sequences(&api_spec.endpoints);
 
-        // Generate sequence seeds: consecutive endpoint pairs
-        let fuzz_requests: Vec<FuzzHttpRequest> = initial_requests
-            .iter()
-            .map(|r| FuzzHttpRequest::from_http_request(r))
-            .collect();
-
-        for window in fuzz_requests.windows(2) {
-            let seq = FuzzRequestSequence::with_extractions(
-                window.to_vec(),
-                auto_detect_extractions(&window[0], &window[1]),
-            );
-            seq_corpus.add(Testcase::new(seq)).unwrap();
-        }
-
-        // Also add a full-chain sequence if we have enough endpoints
-        if fuzz_requests.len() >= 3 {
-            let full_seq = FuzzRequestSequence::with_extractions(
-                fuzz_requests.iter().take(5).cloned().collect(),
-                auto_detect_chain_extractions(&fuzz_requests[..5.min(fuzz_requests.len())]),
-            );
-            seq_corpus.add(Testcase::new(full_seq)).unwrap();
-        }
-
-        let seq_solutions = InMemoryCorpus::<FuzzRequestSequence>::new();
-
-        let mut seq_feedback = CoverageFeedback::<FuzzRequestSequence>::new();
-        let mut seq_objective = CrashFeedback::new();
-
-        let mut seq_state = StdState::new(
-            StdRand::with_seed(123),
-            seq_corpus,
-            seq_solutions,
-            &mut seq_feedback,
-            &mut seq_objective,
-        )
-        .expect("Failed to create sequence state");
-
-        let seq_scheduler = CoverageScheduler::<FuzzRequestSequence>::new();
-        let mut seq_fuzzer = StdFuzzer::new(seq_scheduler, seq_feedback, seq_objective);
-
-        let mut seq_mgr = NopEventManager::new();
-
-        let mut seq_executor = match build_coverage_collector(&coverage_mode) {
-            Some(collector) => SequenceExecutor::with_coverage(10, collector),
-            None => SequenceExecutor::new(10),
-        };
-
-        let mut seq_stages = tuple_list!(StdMutationalStage::new(SequenceMutator::new()));
-
-        for i in 0..seq_iterations {
-            match seq_fuzzer.fuzz_one(
-                &mut seq_stages,
-                &mut seq_executor,
-                &mut seq_state,
-                &mut seq_mgr,
-            ) {
-                Ok(_) => {
-                    if (i + 1) % 10 == 0 {
-                        println!(
-                            "  [seq progress] iteration {}/{}: corpus={}, solutions={}",
-                            i + 1,
-                            seq_iterations,
-                            seq_state.corpus().count(),
-                            seq_state.solutions().count(),
-                        );
-                    }
-                }
-                Err(e) => {
-                    println!("[seq iter {}] Fuzzer error: {}", i, e);
-                    break;
+        if sequence_seeds.is_empty() {
+            println!("  No sequence seeds generated (not enough endpoint variety).");
+        } else {
+            println!("  Generated {} sequence seeds", sequence_seeds.len());
+            for (i, seq) in sequence_seeds.iter().enumerate() {
+                println!(
+                    "    seq {}: {} requests, {} state extractions",
+                    i + 1,
+                    seq.requests.len(),
+                    seq.state_extractions.len(),
+                );
+                for (j, req) in seq.requests.iter().enumerate() {
+                    println!("      {}. {} {}", j + 1, req.method, req.url);
                 }
             }
-        }
-
-        println!();
-        println!("--- Phase 2 Results ---");
-        println!("Sequence corpus entries: {}", seq_state.corpus().count());
-        println!(
-            "Sequence solutions: {}",
-            seq_state.solutions().count()
-        );
-
-        if seq_state.solutions().count() > 0 {
             println!();
-            println!("=== Sequence Solutions ===");
-            let mut id_opt = seq_state.solutions().first();
-            while let Some(id) = id_opt {
-                if let Ok(testcase) = seq_state.solutions().get(id) {
-                    let tc = testcase.borrow();
-                    if let Some(input) = tc.input() {
-                        println!(
-                            "  [seq solution] {} requests:",
-                            input.requests.len()
-                        );
-                        for (i, req) in input.requests.iter().enumerate() {
-                            println!("    {}. {} {}", i + 1, req.method, req.url);
+
+            let mut seq_corpus = InMemoryCorpus::<FuzzRequestSequence>::new();
+            for seq in sequence_seeds {
+                seq_corpus.add(Testcase::new(seq)).unwrap();
+            }
+
+            let seq_solutions = InMemoryCorpus::<FuzzRequestSequence>::new();
+
+            let mut seq_feedback = CoverageFeedback::<FuzzRequestSequence>::new();
+            let mut seq_objective = CrashFeedback::new();
+
+            let mut seq_state = StdState::new(
+                StdRand::with_seed(123),
+                seq_corpus,
+                seq_solutions,
+                &mut seq_feedback,
+                &mut seq_objective,
+            )
+            .expect("Failed to create sequence state");
+
+            let seq_scheduler = CoverageScheduler::<FuzzRequestSequence>::new();
+            let mut seq_fuzzer = StdFuzzer::new(seq_scheduler, seq_feedback, seq_objective);
+
+            let mut seq_mgr = NopEventManager::new();
+
+            let mut seq_executor = match build_coverage_collector(&coverage_mode) {
+                Some(collector) => SequenceExecutor::with_coverage(10, collector),
+                None => SequenceExecutor::new(10),
+            };
+
+            let mut seq_stages = tuple_list!(StdMutationalStage::new(SequenceMutator::new()));
+
+            for i in 0..seq_iterations {
+                match seq_fuzzer.fuzz_one(
+                    &mut seq_stages,
+                    &mut seq_executor,
+                    &mut seq_state,
+                    &mut seq_mgr,
+                ) {
+                    Ok(_) => {
+                        if (i + 1) % 10 == 0 {
+                            println!(
+                                "  [seq progress] iteration {}/{}: corpus={}, solutions={}",
+                                i + 1,
+                                seq_iterations,
+                                seq_state.corpus().count(),
+                                seq_state.solutions().count(),
+                            );
                         }
                     }
+                    Err(e) => {
+                        println!("[seq iter {}] Fuzzer error: {}", i, e);
+                        break;
+                    }
                 }
-                id_opt = seq_state.solutions().next(id);
+            }
+
+            println!();
+            println!("--- Phase 2 Results ---");
+            println!("Sequence corpus entries: {}", seq_state.corpus().count());
+            println!(
+                "Sequence solutions: {}",
+                seq_state.solutions().count()
+            );
+
+            if seq_state.solutions().count() > 0 {
+                println!();
+                println!("=== Sequence Solutions ===");
+                let mut id_opt = seq_state.solutions().first();
+                while let Some(id) = id_opt {
+                    if let Ok(testcase) = seq_state.solutions().get(id) {
+                        let tc = testcase.borrow();
+                        if let Some(input) = tc.input() {
+                            println!(
+                                "  [seq solution] {} requests:",
+                                input.requests.len()
+                            );
+                            for (i, req) in input.requests.iter().enumerate() {
+                                println!("    {}. {} {}", i + 1, req.method, req.url);
+                            }
+                        }
+                    }
+                    id_opt = seq_state.solutions().next(id);
+                }
             }
         }
     }
@@ -380,79 +381,4 @@ fn main() {
             id_opt = state.solutions().next(id);
         }
     }
-}
-
-/// Auto-detect state extractions between two requests.
-/// If req_a is a POST/PUT (likely creates a resource) and req_b references
-/// a path parameter or query that looks like an ID, wire them together.
-fn auto_detect_extractions(
-    req_a: &FuzzHttpRequest,
-    req_b: &FuzzHttpRequest,
-) -> Vec<StateExtraction> {
-    let mut extractions = Vec::new();
-
-    let a_creates = req_a.method == "POST" || req_a.method == "PUT";
-    if !a_creates {
-        return extractions;
-    }
-
-    // If req_b has path segments that look like IDs, extract $.id from req_a's response
-    let b_path_has_id = req_b.url.contains("{id}")
-        || req_b.url.contains("{petId}")
-        || req_b.url.contains("{userId}");
-
-    if b_path_has_id {
-        extractions.push(StateExtraction {
-            source_request_idx: 0,
-            json_path: "$.id".to_string(),
-            target_request_idx: 1,
-            target: InjectionTarget::PathParam("id".to_string()),
-        });
-    }
-
-    // If req_b has an "id" query param
-    if req_b.query_params.contains_key("id") || req_b.query_params.contains_key("userId") {
-        let param_name = if req_b.query_params.contains_key("id") {
-            "id"
-        } else {
-            "userId"
-        };
-        extractions.push(StateExtraction {
-            source_request_idx: 0,
-            json_path: "$.id".to_string(),
-            target_request_idx: 1,
-            target: InjectionTarget::QueryParam(param_name.to_string()),
-        });
-    }
-
-    extractions
-}
-
-/// Auto-detect chain extractions across a sequence of requests.
-/// Wires POST responses' $.id into subsequent requests that might need it.
-fn auto_detect_chain_extractions(requests: &[FuzzHttpRequest]) -> Vec<StateExtraction> {
-    let mut extractions = Vec::new();
-
-    for (i, req) in requests.iter().enumerate() {
-        if req.method != "POST" && req.method != "PUT" {
-            continue;
-        }
-
-        // Look for subsequent requests that might consume the created resource
-        for j in (i + 1)..requests.len() {
-            let target = &requests[j];
-            if target.method == "GET" || target.method == "DELETE" || target.method == "PATCH" {
-                // Extract $.id and inject as path param
-                extractions.push(StateExtraction {
-                    source_request_idx: i,
-                    json_path: "$.id".to_string(),
-                    target_request_idx: j,
-                    target: InjectionTarget::PathParam("id".to_string()),
-                });
-                break;
-            }
-        }
-    }
-
-    extractions
 }
