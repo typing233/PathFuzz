@@ -2,6 +2,7 @@ use libafl::executors::{Executor, ExitKind, HasObservers};
 use libafl::Error;
 use libafl_bolts::tuples::RefIndexable;
 
+use crate::coverage::{CoverageCollector, CoverageMapObserver};
 use crate::http_client::HttpSender;
 
 use super::input::FuzzHttpRequest;
@@ -9,14 +10,24 @@ use super::observer::HttpObserver;
 
 pub struct HttpExecutor {
     sender: HttpSender,
-    observers: (HttpObserver, ()),
+    observers: (HttpObserver, (CoverageMapObserver, ())),
+    coverage_collector: Option<Box<dyn CoverageCollector>>,
 }
 
 impl HttpExecutor {
     pub fn new(timeout_secs: u64) -> Self {
         Self {
             sender: HttpSender::new(timeout_secs),
-            observers: (HttpObserver::new(), ()),
+            observers: (HttpObserver::new(), (CoverageMapObserver::new(), ())),
+            coverage_collector: None,
+        }
+    }
+
+    pub fn with_coverage(timeout_secs: u64, collector: Box<dyn CoverageCollector>) -> Self {
+        Self {
+            sender: HttpSender::new(timeout_secs),
+            observers: (HttpObserver::new(), (CoverageMapObserver::new(), ())),
+            coverage_collector: Some(collector),
         }
     }
 }
@@ -45,7 +56,18 @@ impl<EM, S, Z> Executor<EM, FuzzHttpRequest, S, Z> for HttpExecutor {
                     response.duration
                 );
 
-                self.observers.0.record(status_code, response.body);
+                self.observers.0.record(
+                    status_code,
+                    response.headers.clone(),
+                    response.body.clone(),
+                );
+
+                if let Some(collector) = &mut self.coverage_collector {
+                    self.observers.1.0.update_from_collector(
+                        collector.as_mut(),
+                        &response.headers,
+                    );
+                }
 
                 if is_server_error {
                     Ok(ExitKind::Crash)
@@ -63,7 +85,7 @@ impl<EM, S, Z> Executor<EM, FuzzHttpRequest, S, Z> for HttpExecutor {
 }
 
 impl HasObservers for HttpExecutor {
-    type Observers = (HttpObserver, ());
+    type Observers = (HttpObserver, (CoverageMapObserver, ()));
 
     fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
         RefIndexable::from(&self.observers)

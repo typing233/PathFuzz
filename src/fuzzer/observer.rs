@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use libafl::executors::ExitKind;
 use libafl::observers::Observer;
@@ -13,6 +14,7 @@ pub struct HttpObserver {
     name: Cow<'static, str>,
     pub last_status_code: Option<u16>,
     pub last_response_body: Option<String>,
+    pub last_response_headers: HashMap<String, String>,
 }
 
 impl HttpObserver {
@@ -21,17 +23,20 @@ impl HttpObserver {
             name: Cow::Borrowed("http_observer"),
             last_status_code: None,
             last_response_body: None,
+            last_response_headers: HashMap::new(),
         }
     }
 
-    pub fn record(&mut self, status_code: u16, body: String) {
+    pub fn record(&mut self, status_code: u16, headers: HashMap<String, String>, body: String) {
         self.last_status_code = Some(status_code);
+        self.last_response_headers = headers;
         self.last_response_body = Some(body);
     }
 
     pub fn clear(&mut self) {
         self.last_status_code = None;
         self.last_response_body = None;
+        self.last_response_headers.clear();
     }
 }
 

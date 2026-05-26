@@ -1278,6 +1278,7 @@ dependencies = [
 name = "pathfuzz"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "env_logger",
  "libafl",
  "libafl_bolts",

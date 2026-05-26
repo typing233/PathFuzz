@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
@@ -8,6 +9,7 @@ use crate::parser::HttpMethod;
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status_code: u16,
+    pub headers: HashMap<String, String>,
     pub body: String,
     pub duration: Duration,
 }
@@ -67,10 +69,18 @@ impl HttpSender {
         let response: Response = req_builder.send()?;
         let duration = start.elapsed();
         let status_code = response.status().as_u16();
+
+        let headers: HashMap<String, String> = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+
         let body = response.text().unwrap_or_default();
 
         Ok(HttpResponse {
             status_code,
+            headers,
             body,
             duration,
         })
