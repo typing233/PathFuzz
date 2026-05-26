@@ -7,6 +7,7 @@ pub mod scheduler;
 pub mod param_mutator;
 pub mod sequence_input;
 pub mod sequence_mutator;
+pub mod sequence_executor;
 pub mod state_manager;
 
 pub use input::*;
@@ -18,4 +19,5 @@ pub use scheduler::CoverageScheduler;
 pub use param_mutator::ParamMutator;
 pub use sequence_input::FuzzRequestSequence;
 pub use sequence_mutator::SequenceMutator;
+pub use sequence_executor::SequenceExecutor;
 pub use state_manager::StateManager;

@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use libafl::executors::ExitKind;
+use libafl::inputs::Input;
 use libafl::observers::Observer;
 use libafl::Error;
 use libafl_bolts::Named;
 use serde::{Deserialize, Serialize};
 
 use super::{CoverageCollector, COVERAGE_MAP_SIZE};
-use crate::fuzzer::FuzzHttpRequest;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CoverageMapObserver {
@@ -87,8 +87,11 @@ impl Named for CoverageMapObserver {
     }
 }
 
-impl<S> Observer<FuzzHttpRequest, S> for CoverageMapObserver {
-    fn pre_exec(&mut self, _state: &mut S, _input: &FuzzHttpRequest) -> Result<(), Error> {
+impl<I, S> Observer<I, S> for CoverageMapObserver
+where
+    I: Input,
+{
+    fn pre_exec(&mut self, _state: &mut S, _input: &I) -> Result<(), Error> {
         self.clear_current();
         Ok(())
     }
@@ -96,7 +99,7 @@ impl<S> Observer<FuzzHttpRequest, S> for CoverageMapObserver {
     fn post_exec(
         &mut self,
         _state: &mut S,
-        _input: &FuzzHttpRequest,
+        _input: &I,
         _exit_kind: &ExitKind,
     ) -> Result<(), Error> {
         Ok(())

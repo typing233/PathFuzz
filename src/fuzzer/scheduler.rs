@@ -1,13 +1,16 @@
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
+use libafl::common::HasNamedMetadata;
 use libafl::corpus::{Corpus, CorpusId, HasTestcase};
+use libafl::inputs::Input;
 use libafl::schedulers::Scheduler;
 use libafl::state::{HasCorpus, HasRand};
 use libafl::Error;
 use libafl_bolts::rands::Rand;
 use serde::{Deserialize, Serialize};
 
-use crate::fuzzer::input::FuzzHttpRequest;
+use crate::coverage::CoverageGainMetadata;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CoverageEntry {
@@ -18,18 +21,21 @@ pub struct CoverageEntry {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CoverageScheduler {
+pub struct CoverageScheduler<I> {
     seed_scores: HashMap<usize, CoverageEntry>,
     total_executions: usize,
     current_cycle: usize,
+    #[serde(skip)]
+    _phantom: PhantomData<I>,
 }
 
-impl CoverageScheduler {
+impl<I> CoverageScheduler<I> {
     pub fn new() -> Self {
         Self {
             seed_scores: HashMap::new(),
             total_executions: 0,
             current_cycle: 0,
+            _phantom: PhantomData,
         }
     }
 
@@ -92,9 +98,10 @@ impl CoverageScheduler {
     }
 }
 
-impl<S> Scheduler<FuzzHttpRequest, S> for CoverageScheduler
+impl<I, S> Scheduler<I, S> for CoverageScheduler<I>
 where
-    S: HasCorpus<FuzzHttpRequest> + HasRand + HasTestcase<FuzzHttpRequest>,
+    I: Input,
+    S: HasCorpus<I> + HasRand + HasTestcase<I> + HasNamedMetadata,
 {
     fn next(&mut self, state: &mut S) -> Result<CorpusId, Error> {
         let count = state.corpus().count();
@@ -119,14 +126,27 @@ where
         state.corpus().first().ok_or_else(|| Error::empty("Corpus unexpectedly empty".to_string()))
     }
 
-    fn on_add(&mut self, _state: &mut S, id: CorpusId) -> Result<(), Error> {
-        let idx = usize::from(id);
-        self.seed_scores.entry(idx).or_insert(CoverageEntry {
-            new_edges: 1,
-            total_edges_at_discovery: 0,
-            execution_count: 0,
-            energy: 2.0,
-        });
+    fn on_add(&mut self, state: &mut S, id: CorpusId) -> Result<(), Error> {
+        let (new_edges, total_edges) = {
+            let metadata = state.named_metadata_map().get::<CoverageGainMetadata>("coverage_gain");
+            match metadata {
+                Some(gain) => (gain.new_edges, gain.total_edges),
+                None => (0, 0),
+            }
+        };
+
+        if new_edges > 0 {
+            self.record_coverage_gain(id, new_edges, total_edges);
+        } else {
+            let idx = usize::from(id);
+            self.seed_scores.entry(idx).or_insert(CoverageEntry {
+                new_edges: 0,
+                total_edges_at_discovery: total_edges,
+                execution_count: 0,
+                energy: 1.5,
+            });
+        }
+
         Ok(())
     }
 

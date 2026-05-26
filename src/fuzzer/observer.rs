@@ -2,12 +2,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use libafl::executors::ExitKind;
+use libafl::inputs::Input;
 use libafl::observers::Observer;
 use libafl::Error;
 use libafl_bolts::Named;
 use serde::{Deserialize, Serialize};
-
-use super::input::FuzzHttpRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpObserver {
@@ -46,8 +45,11 @@ impl Named for HttpObserver {
     }
 }
 
-impl<S> Observer<FuzzHttpRequest, S> for HttpObserver {
-    fn pre_exec(&mut self, _state: &mut S, _input: &FuzzHttpRequest) -> Result<(), Error> {
+impl<I, S> Observer<I, S> for HttpObserver
+where
+    I: Input,
+{
+    fn pre_exec(&mut self, _state: &mut S, _input: &I) -> Result<(), Error> {
         self.clear();
         Ok(())
     }
@@ -55,7 +57,7 @@ impl<S> Observer<FuzzHttpRequest, S> for HttpObserver {
     fn post_exec(
         &mut self,
         _state: &mut S,
-        _input: &FuzzHttpRequest,
+        _input: &I,
         _exit_kind: &ExitKind,
     ) -> Result<(), Error> {
         Ok(())

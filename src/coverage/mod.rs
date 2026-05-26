@@ -8,6 +8,7 @@ pub use header::HeaderCoverageCollector;
 pub use header::HeaderEncoding;
 pub use observer::CoverageMapObserver;
 pub use feedback::CoverageFeedback;
+pub use feedback::CoverageGainMetadata;
 
 use std::collections::HashMap;
 use std::fmt;
